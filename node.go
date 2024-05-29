@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -9,8 +10,13 @@ import (
 
 type Node struct {
 	height uint64 // latest height
+
 	client *ethclient.Client
-	quit   chan bool
+
+	fails    []int64 // list for fail time
+	failsMtx *sync.Mutex
+
+	quit chan bool
 }
 
 func NewNode(rpcUrl string) (*Node, error) {
@@ -19,8 +25,10 @@ func NewNode(rpcUrl string) (*Node, error) {
 		return nil, err
 	}
 	return &Node{
-		client: client,
-		quit:   make(chan bool, 1),
+		client:   client,
+		fails:    make([]int64, 0),
+		failsMtx: new(sync.Mutex),
+		quit:     make(chan bool, 1),
 	}, nil
 }
 
@@ -38,6 +46,13 @@ func (n *Node) heartbeat(interval int64) {
 			return
 		}
 	}
+}
+
+func (n *Node) FailCount() {
+	n.failsMtx.Lock()
+	defer n.failsMtx.Unlock()
+
+	n.fails = append(n.fails, time.Now().Unix())
 }
 
 func (n *Node) Close() {
