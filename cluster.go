@@ -5,6 +5,10 @@ import (
 	"errors"
 	"log"
 	"math/big"
+	"math/rand"
+	"sort"
+	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -14,7 +18,14 @@ import (
 var ErrNoData = errors.New("no data")
 
 type Cluster struct {
-	nodes []*Node
+	duration int64
+	nodes    []*Node
+	mtx      *sync.Mutex
+	quit     chan bool
+}
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
 }
 
 func NewCluster(rpcList []string, heartbeatInterval int64) (*Cluster, error) {
@@ -28,20 +39,55 @@ func NewCluster(rpcList []string, heartbeatInterval int64) (*Cluster, error) {
 		}
 	}
 	cluster := &Cluster{
-		nodes: nodes,
-	}
-
-	for _, node := range cluster.nodes {
-		go node.heartbeat(heartbeatInterval)
+		nodes:    nodes,
+		duration: heartbeatInterval,
+		quit:     make(chan bool, 1),
+		mtx:      new(sync.Mutex),
 	}
 
 	return cluster, nil
+}
+
+func (c *Cluster) Run() {
+	for _, node := range c.nodes {
+		go node.heartbeat(c.duration)
+	}
+
+	for {
+		select {
+		case <-time.After(time.Second * time.Duration(c.duration)):
+			c.sort()
+		case <-c.quit:
+			return
+		}
+	}
 }
 
 func (c *Cluster) Close() {
 	for _, node := range c.nodes {
 		node.Close()
 	}
+	close(c.quit)
+}
+
+// sort nodes by fail count and height
+func (c *Cluster) sort() {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
+	sort.Slice(c.nodes, func(i, j int) bool {
+		return c.nodes[i].FailCount(c.duration) < c.nodes[j].FailCount(c.duration)
+	})
+
+	sort.Slice(c.nodes, func(i, j int) bool {
+		return c.nodes[i].height < c.nodes[j].height
+	})
+
+	// Shuffle the first 50% of nodes
+	n := len(c.nodes) / 2
+	rand.Shuffle(n, func(i, j int) {
+		c.nodes[i], c.nodes[j] = c.nodes[j], c.nodes[i]
+	})
 }
 
 // ChainID retrieves the current chain ID for transaction replay protection.
@@ -49,7 +95,7 @@ func (c *Cluster) ChainId() (*big.Int, error) {
 	for _, node := range c.nodes {
 		chainId, err := node.client.ChainID(context.Background())
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return chainId, nil
 		}
@@ -65,7 +111,7 @@ func (c *Cluster) BlockByHash(hash common.Hash) (*types.Block, error) {
 	for _, node := range c.nodes {
 		block, err := node.client.BlockByHash(context.Background(), hash)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return block, nil
 		}
@@ -82,7 +128,7 @@ func (c *Cluster) BlockByNumber(num *big.Int) (*types.Block, error) {
 	for _, node := range c.nodes {
 		block, err := node.client.BlockByNumber(context.Background(), num)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return block, nil
 		}
@@ -95,7 +141,7 @@ func (c *Cluster) BlockNumber() (uint64, error) {
 	for _, node := range c.nodes {
 		height, err := node.client.BlockNumber(context.Background())
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return height, nil
 		}
@@ -108,7 +154,7 @@ func (c *Cluster) HeaderByHash(hash common.Hash) (*types.Header, error) {
 	for _, node := range c.nodes {
 		header, err := node.client.HeaderByHash(context.Background(), hash)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return header, nil
 		}
@@ -122,7 +168,7 @@ func (c *Cluster) HeaderByNumber(number *big.Int) (*types.Header, error) {
 	for _, node := range c.nodes {
 		header, err := node.client.HeaderByNumber(context.Background(), number)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return header, nil
 		}
@@ -135,7 +181,7 @@ func (c *Cluster) TransactionByHash(hash common.Hash) (tx *types.Transaction, is
 	for _, node := range c.nodes {
 		tx, isPending, err = node.client.TransactionByHash(context.Background(), hash)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return
 		}
@@ -148,7 +194,7 @@ func (c *Cluster) TransactionCount(blockHash common.Hash) (uint, error) {
 	for _, node := range c.nodes {
 		num, err := node.client.TransactionCount(context.Background(), blockHash)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return num, nil
 		}
@@ -161,7 +207,7 @@ func (c *Cluster) TransactionInBlock(blockHash common.Hash, index uint) (*types.
 	for _, node := range c.nodes {
 		tx, err := node.client.TransactionInBlock(context.Background(), blockHash, index)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return tx, nil
 		}
@@ -175,7 +221,7 @@ func (c *Cluster) TransactionReceipt(txHash common.Hash) (*types.Receipt, error)
 	for _, node := range c.nodes {
 		receipt, err := node.client.TransactionReceipt(context.Background(), txHash)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return receipt, nil
 		}
@@ -190,7 +236,7 @@ func (c *Cluster) NetworkID() (*big.Int, error) {
 	for _, node := range c.nodes {
 		id, err := node.client.NetworkID(context.Background())
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return id, nil
 		}
@@ -204,7 +250,7 @@ func (c *Cluster) BalanceAt(account common.Address, blockNumber *big.Int) (*big.
 	for _, node := range c.nodes {
 		balance, err := node.client.BalanceAt(context.Background(), account, blockNumber)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return balance, nil
 		}
@@ -218,7 +264,7 @@ func (c *Cluster) StorageAt(account common.Address, key common.Hash, blockNumber
 	for _, node := range c.nodes {
 		storage, err := node.client.StorageAt(context.Background(), account, key, blockNumber)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return storage, nil
 		}
@@ -232,7 +278,7 @@ func (c *Cluster) CodeAt(account common.Address, blockNumber *big.Int) ([]byte, 
 	for _, node := range c.nodes {
 		code, err := node.client.CodeAt(context.Background(), account, blockNumber)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return code, nil
 		}
@@ -246,7 +292,7 @@ func (c *Cluster) NonceAt(account common.Address, blockNumber *big.Int) (uint64,
 	for _, node := range c.nodes {
 		nonce, err := node.client.NonceAt(context.Background(), account, blockNumber)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return nonce, nil
 		}
@@ -260,7 +306,7 @@ func (c *Cluster) FilterLogs(start, end uint64, contract common.Address) ([]type
 	for _, node := range c.nodes {
 		logs, err := node.client.FilterLogs(context.Background(), query)
 		if err != nil {
-			node.FailCount()
+			node.FailIncrease()
 		} else {
 			return logs, nil
 		}

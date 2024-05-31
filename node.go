@@ -13,6 +13,7 @@ type Node struct {
 
 	client *ethclient.Client
 
+	lastTime int64
 	fails    []int64 // list for fail time
 	failsMtx *sync.Mutex
 
@@ -48,11 +49,26 @@ func (n *Node) heartbeat(interval int64) {
 	}
 }
 
-func (n *Node) FailCount() {
+func (n *Node) FailIncrease() {
 	n.failsMtx.Lock()
 	defer n.failsMtx.Unlock()
 
 	n.fails = append(n.fails, time.Now().Unix())
+}
+
+func (n *Node) FailCount(duration int64) int {
+	n.failsMtx.Lock()
+	defer n.failsMtx.Unlock()
+
+	now := time.Now().Unix()
+
+	count := 0
+	for _, t := range n.fails {
+		if now-t < duration {
+			count++
+		}
+	}
+	return count
 }
 
 func (n *Node) Close() {
