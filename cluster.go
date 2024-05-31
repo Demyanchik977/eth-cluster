@@ -17,11 +17,12 @@ import (
 
 var ErrNoData = errors.New("no data")
 
+// Cluster represents a cluster of nodes.
 type Cluster struct {
-	duration int64
-	nodes    []*Node
-	mtx      *sync.Mutex
-	quit     chan bool
+	duration int64       // duration specifies the duration of the cluster.
+	nodes    []*Node     // nodes is a slice of nodes in the cluster.
+	mtx      *sync.Mutex // mtx is a mutex used for synchronization.
+	quit     chan bool   // quit is a channel used for signaling the cluster to stop.
 }
 
 func init() {
@@ -48,14 +49,19 @@ func NewCluster(rpcList []string, heartbeatInterval int64) (*Cluster, error) {
 	return cluster, nil
 }
 
+// Run starts the cluster and runs the heartbeat and sorting processes.
+// It launches a goroutine for each node to perform heartbeat at the specified duration.
+// It also starts a ticker to trigger the sorting process at the specified duration.
+// The method will continue running until the quit channel receives a signal.
 func (c *Cluster) Run() {
 	for _, node := range c.nodes {
 		go node.heartbeat(c.duration)
 	}
 
+	ticker := time.NewTicker(time.Second * time.Duration(c.duration))
 	for {
 		select {
-		case <-time.After(time.Second * time.Duration(c.duration)):
+		case <-ticker.C:
 			c.sort()
 		case <-c.quit:
 			return
@@ -83,11 +89,11 @@ func (c *Cluster) sort() {
 		return c.nodes[i].height < c.nodes[j].height
 	})
 
-	// Shuffle the first 50% of nodes
-	n := len(c.nodes) / 2
-	rand.Shuffle(n, func(i, j int) {
-		c.nodes[i], c.nodes[j] = c.nodes[j], c.nodes[i]
-	})
+	// // Shuffle the first 50% of nodes
+	// n := len(c.nodes) / 2
+	// rand.Shuffle(n, func(i, j int) {
+	// 	c.nodes[i], c.nodes[j] = c.nodes[j], c.nodes[i]
+	// })
 }
 
 // ChainID retrieves the current chain ID for transaction replay protection.

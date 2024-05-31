@@ -33,6 +33,8 @@ func NewNode(rpcUrl string) (*Node, error) {
 	}, nil
 }
 
+// heartbeat periodically updates the height of the node by querying the block number from the Ethereum client.
+// It runs in a loop until the quit channel receives a signal.
 func (n *Node) heartbeat(interval int64) {
 	duration := time.Second * time.Duration(interval)
 	ticker := time.NewTicker(duration)
@@ -49,6 +51,7 @@ func (n *Node) heartbeat(interval int64) {
 	}
 }
 
+// FailIncrease appends the current timestamp to the list of failures for the node.
 func (n *Node) FailIncrease() {
 	n.failsMtx.Lock()
 	defer n.failsMtx.Unlock()
@@ -56,6 +59,11 @@ func (n *Node) FailIncrease() {
 	n.fails = append(n.fails, time.Now().Unix())
 }
 
+// FailCount returns the number of failures that occurred within the specified duration.
+// It locks the failsMtx mutex to ensure thread safety.
+// The duration parameter specifies the time window in seconds.
+// It counts the number of failures that occurred within the specified duration by comparing the current time with the timestamps of the failures.
+// Returns the count of failures within the specified duration.
 func (n *Node) FailCount(duration int64) int {
 	n.failsMtx.Lock()
 	defer n.failsMtx.Unlock()
